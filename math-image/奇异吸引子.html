@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Peter de Jong Attractor - Digital Silk</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: "Helvetica Neue", sans-serif; background-color: #131313; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      display: block;
+      /* 细微的辉光效果，增加氛围感 */
+      box-shadow: 0 0 80px rgba(0, 0, 0, 0.5); 
+    }
+    #ui {
+      position: absolute;
+      bottom: 40px;
+      width: 100%;
+      text-align: center;
+      color: #4a4a55;
+      font-size: 0.8rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="ui">Peter de Jong Attractor / Rendering...</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // 高分辨率渲染 (Retina支持)
+    const width = window.innerWidth * 1.5; 
+    const height = window.innerHeight * 1.5;
+    
+    canvas.width = width;
+    canvas.height = height;
+    // CSS 尺寸保持屏幕大小
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+
+    // --- 核心参数 (决定形状) ---
+    // Peter de Jong 吸引子公式参数
+    // 改变这些数字会完全改变"丝绸"的折叠方式
+    const params = {
+      a: 1.4,
+      b: -2.3,
+      c: 2.4,
+      d: -2.1
+    };
+    
+    // 也可以尝试这组参数，效果像一个漩涡：
+    // const params = { a: 2.01, b: -2.53, c: 1.61, d: -0.33 };
+
+    // --- 颜色定义 (您的定制色板) ---
+    const BG_COLOR = { r: 19, g: 19, b: 19 }; // #131313
+    const LOW_DENSITY_COLOR = { r: 10, g: 30, b: 70 }; // 深邃幽蓝
+    const HIGH_DENSITY_COLOR = { r: 235, g: 232, b: 205 }; // 米白
+
+    // 曝光度控制
+    const EXPOSURE = 0.004; // 每一个点对亮度的贡献值 (越小越细腻)
+
+    // 初始化缓冲区
+    // 我们不直接画在 canvas 上，而是先在内存中统计每个像素"被经过了多少次"
+    // 这样才能画出完美的半透明叠加效果
+    const buffer = new Float32Array(width * height);
+
+    let x = 0;
+    let y = 0;
+    let totalPoints = 0;
+    const pointsPerFrame = 200000; // 每帧计算的点数
+
+    function render() {
+      // 1. 计算点的位置 (数学核心)
+      for (let i = 0; i < pointsPerFrame; i++) {
+        // Peter de Jong 公式:
+        // x' = sin(a * y) - cos(b * x)
+        // y' = sin(c * x) - cos(d * y)
+        const nextX = Math.sin(params.a * y) - Math.cos(params.b * x);
+        const nextY = Math.sin(params.c * x) - Math.cos(params.d * y);
+        
+        x = nextX;
+        y = nextY;
+
+        // 2. 映射到屏幕坐标
+        // x, y 的范围大约在 -2 到 2 之间，我们需要将其映射到 canvas 尺寸
+        // 放大系数，留出边距
+        const scale = Math.min(width, height) * 0.22; 
+        
+        const screenX = Math.floor(width / 2 + x * scale);
+        const screenY = Math.floor(height / 2 + y * scale);
+
+        // 3. 累积密度 (Accumulation)
+        if (screenX >= 0 && screenX < width && screenY >= 0 && screenY < height) {
+          buffer[screenY * width + screenX] += 1.0;
+        }
+      }
+      
+      totalPoints += pointsPerFrame;
+
+      // 每隔几帧才更新一次画面，避免消耗过多性能在绘图上
+      if (totalPoints % (pointsPerFrame * 4) === 0) {
+        drawBufferToCanvas();
+      }
+
+      requestAnimationFrame(render);
+    }
+
+    // 将数值缓冲区转换为颜色像素
+    function drawBufferToCanvas() {
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+
+      // 寻找当前最大密度，用于归一化 (可选，但这会让画面亮度随时间自动适应)
+      // 为了保持深邃感，我们这里使用固定的对数曲线，不完全归一化
+      
+      for (let i = 0; i < width * height; i++) {
+        const density = buffer[i];
+        
+        if (density > 0) {
+          // 对数着色：模拟人眼对光的非线性感知
+          // log(density) 使得低密度(蓝色)和高密度(米白)都能被看见
+          const val = Math.log(density * EXPOSURE + 1.0) * 0.6; // 系数控制整体亮度
+          
+          // 限制在 0-1 之间
+          const t = Math.min(val, 1.0);
+
+          // --- 颜色混合算法 ---
+          // 这是一个三段混合：
+          // t = 0.0 -> 背景色 (#131313)
+          // t = 0.5 -> 深蓝色 (Midtone)
+          // t = 1.0 -> 米白色 (Highlight)
+          
+          let r, g, b;
+
+          if (t < 0.5) {
+            // 前半段：背景 -> 深蓝
+            const n = t * 2.0; // 归一化到 0-1
+            r = BG_COLOR.r * (1 - n) + LOW_DENSITY_COLOR.r * n;
+            g = BG_COLOR.g * (1 - n) + LOW_DENSITY_COLOR.g * n;
+            b = BG_COLOR.b * (1 - n) + LOW_DENSITY_COLOR.b * n;
+          } else {
+            // 后半段：深蓝 -> 米白
+            const n = (t - 0.5) * 2.0; // 归一化到 0-1
+            r = LOW_DENSITY_COLOR.r * (1 - n) + HIGH_DENSITY_COLOR.r * n;
+            g = LOW_DENSITY_COLOR.g * (1 - n) + HIGH_DENSITY_COLOR.g * n;
+            b = LOW_DENSITY_COLOR.b * (1 - n) + HIGH_DENSITY_COLOR.b * n;
+          }
+
+          const idx = i * 4;
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+          data[idx + 3] = 255;
+        } else {
+          // 没有点的地方直接填充背景
+          const idx = i * 4;
+          data[idx] = BG_COLOR.r;
+          data[idx + 1] = BG_COLOR.g;
+          data[idx + 2] = BG_COLOR.b;
+          data[idx + 3] = 255;
+        }
+      }
+      
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // 启动渲染
+    render();
+
+  </script>
+</body>
+</html>

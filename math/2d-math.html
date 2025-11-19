@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>动态函数图像绘制器</title>
+    <!-- 引入 function-plot 库 (包含 d3) -->
+    <script src="https://unpkg.com/function-plot/dist/function-plot.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 800px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 { color: #333; }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        select, input, button {
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        input {
+            flex-grow: 1;
+            min-width: 200px;
+        }
+
+        /* 绘图容器 */
+        #plot {
+            width: 100%;
+            height: 500px;
+            margin: 0 auto;
+        }
+
+        .error-msg {
+            color: red;
+            height: 20px;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>函数图像绘制器</h1>
+    
+    <div class="controls">
+        <!-- 预设公式选择 -->
+        <select id="formulaSelect">
+            <option value="">-- 选择预设公式 --</option>
+            <option value="x^2">抛物线 (x^2)</option>
+            <option value="sin(x)">正弦波 (sin(x))</option>
+            <option value="cos(x) * x">震荡发散 (cos(x) * x)</option>
+            <option value="sqrt(x)">平方根 (sqrt(x))</option>
+            <option value="1/x">反比例 (1/x)</option>
+            <option value="x^3 - 3*x">三次函数 (x^3 - 3x)</option>
+        </select>
+
+        <!-- 自定义输入 -->
+        <input type="text" id="formulaInput" placeholder="输入公式，例如: x^2 + sin(x)" value="x^2">
+        
+        <button onclick="draw()">绘制</button>
+    </div>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <!-- 图像显示区域 -->
+    <div id="plot"></div>
+</div>
+
+<script>
+    // 获取DOM元素
+    const selectEl = document.getElementById('formulaSelect');
+    const inputEl = document.getElementById('formulaInput');
+    const errorEl = document.getElementById('errorMsg');
+
+    // 初始化绘图
+    draw();
+
+    // 监听下拉框变化
+    selectEl.addEventListener('change', function() {
+        if(this.value) {
+            inputEl.value = this.value;
+            draw();
+        }
+    });
+
+    // 监听输入框回车事件
+    inputEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            draw();
+        }
+    });
+
+    // 核心绘图函数
+    function draw() {
+        const formula = inputEl.value.trim();
+        errorEl.textContent = ''; // 清空错误信息
+
+        if (!formula) return;
+
+        try {
+            // 调用 function-plot 库
+            functionPlot({
+                target: '#plot',  // 目标容器ID
+                width: 800,
+                height: 500,
+                yAxis: { domain: [-5, 5] }, // 初始Y轴范围
+                grid: true,       // 显示网格
+                data: [{
+                    fn: formula,
+                    sampler: 'builtIn',  // 使用内置采样器
+                    graphType: 'polyline'
+                }]
+            });
+        } catch (err) {
+            // 捕捉公式语法错误
+            console.error(err);
+            errorEl.textContent = "公式格式错误，请检查语法 (例如: 2x 应写为 2*x)";
+        }
+    }
+    
+    // 响应式处理：窗口大小改变时重绘
+    window.addEventListener('resize', function() {
+        draw();
+    });
+</script>
+
+</body>
+</html>

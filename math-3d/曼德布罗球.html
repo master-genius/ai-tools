@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Galactic Mandelbulb - Clarity</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #000; }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: move; }
+    #ui {
+      position: absolute;
+      bottom: 30px;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.5);
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12px;
+      pointer-events: none;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+    }
+    #loading {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        color: #0ff;
+        font-family: sans-serif;
+        font-weight: bold;
+        letter-spacing: 2px;
+        transition: opacity 0.5s;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">IGNITING UNIVERSE...</div>
+  <canvas id="glcanvas"></canvas>
+  <div id="ui">Galactic Core // High Clarity Render</div>
+
+  <script id="vs" type="x-shader/x-vertex">
+    attribute vec2 position;
+    void main() {
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+  </script>
+
+  <script id="fs" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform vec2 u_resolution;
+    uniform float u_time;
+    uniform vec2 u_mouse;
+
+    // --- 星系配色方案 ---
+    // 1. 核心光芒 (金橙色)
+    const vec3 COL_CORE = vec3(1.0, 0.6, 0.1);
+    // 2. 中层星云 (洋红/紫)
+    const vec3 COL_MID = vec3(0.8, 0.1, 0.5);
+    // 3. 外层气体 (青/蓝)
+    const vec3 COL_OUTER = vec3(0.0, 0.8, 1.0);
+    
+    // 背景：绝对纯黑
+    const vec3 COL_BG = vec3(0.0, 0.0, 0.0);
+
+    const float POWER = 8.0;
+
+    // 距离场
+    vec2 map(vec3 pos) {
+        vec3 w = pos;
+        float dr = 1.0;
+        float r = 0.0;
+        float trap = 1e10; // 轨道陷阱
+
+        for (int i = 0; i < 8; i++) {
+            r = length(w);
+            if (r > 2.0) break;
+
+            // 捕捉每个点到轴心的距离，用于生成星云纹理
+            // 这里改用 4个球体的轨道陷阱，创造更丰富的色彩变化
+            trap = min(trap, length(w.xyz - vec3(1.0, 0.0, 0.0))); // 偏向一侧
+
+            float theta = acos(w.z / r);
+            float phi = atan(w.y, w.x);
+            
+            dr = pow(r, POWER - 1.0) * POWER * dr + 1.0;
+            float zr = pow(r, POWER);
+            theta = theta * POWER;
+            phi = phi * POWER;
+            
+            w = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
+            w += pos;
+        }
+        return vec2(0.5 * log(r) * r / dr, trap);
+    }
+
+    // 射线追踪
+    vec3 march(vec3 ro, vec3 rd) {
+        float totalDist = 0.0;
+        float trap = 0.0;
+        float d = 0.0;
+        
+        // 增加步进次数以获得更精细的边缘
+        for(int i = 0; i < 128; i++) {
+            vec3 p = ro + rd * totalDist;
+            vec2 res = map(p);
+            d = res.x;
+            trap = res.y;
+            // 阈值调小，锐化边缘
+            if(d < 0.0005 || totalDist > 4.0) break;
+            totalDist += d;
+        }
+        
+        if(d < 0.001) return vec3(totalDist, trap, 1.0);
+        return vec3(totalDist, 0.0, 0.0);
+    }
+
+    vec3 getNormal(vec3 p) {
+        vec2 e = vec2(0.0005, 0.0); // 更小的采样间距，更锐利的法线
+        return normalize(vec3(
+            map(p + e.xyy).x - map(p - e.xyy).x,
+            map(p + e.yxy).x - map(p - e.yxy).x,
+            map(p + e.yyx).x - map(p - e.yyx).x
+        ));
+    }
+
+    // 锐利的阴影
+    float softShadow(vec3 ro, vec3 rd, float k) {
+        float res = 1.0;
+        float t = 0.01;
+        for(int i = 0; i < 32; i++) {
+            float h = map(ro + rd * t).x;
+            // 这里的 64.0 (k) 越大，阴影越硬，越清晰
+            res = min(res, k * h / t);
+            t += clamp(h, 0.002, 0.1);
+            if(res < 0.001) break;
+        }
+        return clamp(res, 0.0, 1.0);
+    }
+
+    void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
+        
+        float time = u_time * 0.2;
+        float radius = 2.1; 
+        
+        float mouseX = (u_mouse.x / u_resolution.x - 0.5) * 4.0;
+        float mouseY = (u_mouse.y / u_resolution.y - 0.5) * 4.0;
+
+        vec3 ro = vec3(
+            radius * sin(time + mouseX), 
+            0.3 * sin(time * 0.7) + mouseY, 
+            radius * cos(time + mouseX)
+        );
+        vec3 ta = vec3(0.0);
+        vec3 f = normalize(ta - ro);
+        vec3 r = normalize(cross(vec3(0.0, 1.0, 0.0), f));
+        vec3 u = cross(f, r);
+        vec3 rd = normalize(uv.x * r + uv.y * u + 1.8 * f);
+
+        vec3 result = march(ro, rd);
+        float t = result.x;
+        float trap = result.y;
+        float hit = result.z;
+
+        vec3 col = COL_BG;
+
+        if (hit > 0.5) {
+            vec3 p = ro + rd * t;
+            vec3 n = getNormal(p);
+            
+            vec3 lightPos = vec3(2.0, 4.0, 3.0);
+            vec3 l = normalize(lightPos - p);
+            vec3 v = normalize(ro - p);
+            vec3 h = normalize(l + v); // Half vector for Blinn-Phong
+
+            // --- 材质与着色逻辑 ---
+
+            // 1. 基础星云色 (Based on Trap)
+            // trap 值越小代表越接近“奇异点”，越热
+            // 使用 mix 进行三色渐变：紫 -> 青
+            vec3 baseColor = mix(COL_MID, COL_OUTER, clamp(trap * 1.5, 0.0, 1.0));
+            
+            // 2. 核心自发光 (Emissive)
+            // 在 trap 极小的地方叠加金橙色，模仿恒星/星系核
+            // exp() 函数让辉光非常集中
+            baseColor += COL_CORE * exp(-trap * 8.0) * 1.5;
+
+            // 3. 光照计算
+            float diff = max(dot(n, l), 0.0);
+            // 极其锐利的高光 (Power 128.0)，像玻璃或晶体
+            float spec = pow(max(dot(n, h), 0.0), 128.0); 
+            float sha = softShadow(p + n * 0.01, l, 32.0); // 较硬的阴影
+
+            // 边缘光 (Rim Light) - 模拟大气层或能量场
+            float rim = 1.0 - max(dot(n, v), 0.0);
+            rim = smoothstep(0.3, 1.0, rim);
+            vec3 rimColor = vec3(0.4, 0.8, 1.0) * pow(rim, 4.0);
+
+            // 组合
+            vec3 lin = vec3(0.0);
+            lin += diff * baseColor * sha;        // 漫反射携带星云色
+            lin += spec * vec3(1.0) * sha * 2.0;  // 纯白高光，强度翻倍
+            lin += rimColor * 1.5;                // 强烈的边缘发光
+            
+            // 环境光补充 (让暗部也有色彩，而不是死黑)
+            lin += baseColor * 0.1; 
+
+            col = lin;
+        } else {
+            // --- 简单的星空背景 ---
+            // 即使没打中 Mandelbulb，为了不让背景太无聊，加一点点星星
+            float stars = fract(sin(dot(rd.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            if (stars > 0.995) {
+                col = vec3(stars * 0.5); // 远处的星星
+            }
+        }
+
+        // Tone Mapping (色调映射)
+        // ACES Filmic Curve - 电影级调色，防止高光过曝，同时增加对比度
+        col *= 1.2; // 整体曝光提升
+        float a = 2.51;
+        float b = 0.03;
+        float c = 2.43;
+        float d = 0.59;
+        float e = 0.14;
+        col = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+  </script>
+
+  <script>
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl');
+    const loading = document.getElementById('loading');
+
+    if (!gl) { alert('WebGL not supported'); }
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader); return null;
+      }
+      return shader;
+    }
+
+    const program = gl.createProgram();
+    gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+    gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    const pBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, pBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+    const pLoc = gl.getAttribLocation(program, "position");
+    gl.enableVertexAttribArray(pLoc);
+    gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+
+    const uRes = gl.getUniformLocation(program, "u_resolution");
+    const uTime = gl.getUniformLocation(program, "u_time");
+    const uMouse = gl.getUniformLocation(program, "u_mouse");
+
+    let mx = 0, my = 0;
+    document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+
+    function render(t) {
+      gl.uniform2f(uRes, canvas.width, canvas.height);
+      gl.uniform1f(uTime, t * 0.001);
+      gl.uniform2f(uMouse, mx, my);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      requestAnimationFrame(render);
+      loading.style.opacity = 0;
+    }
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>

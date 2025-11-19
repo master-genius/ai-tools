@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Newton Fractal - Deep Elegant</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #131313; color: #eee; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      max-width: 95vw;
+      max-height: 95vh;
+      display: block;
+      box-shadow: 0 0 50px rgba(0,0,0,0.5); /* 增加一点阴影让它更好看 */
+    }
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #131313; /* loading 背景也改成这个黑灰色 */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #ccc;
+      font-size: 1.5em;
+      z-index: 100;
+      pointer-events: none;
+      opacity: 0;
+      letter-spacing: 2px;
+      transition: opacity 0.5s ease-in-out;
+    }
+    #loading-overlay.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="fract"></canvas>
+  </div>
+  <div id="loading-overlay">RENDERING FRACTAL...</div>
+  <script>
+    var cv = document.getElementById('fract');
+    var ctx = cv.getContext('2d');
+
+    // 分辨率设置
+    const RENDER_WIDTH = 5120;
+    const RENDER_HEIGHT = 3200;
+
+    cv.width = RENDER_WIDTH;
+    cv.height = RENDER_HEIGHT;
+
+    var imd = ctx.createImageData(RENDER_WIDTH, RENDER_HEIGHT);
+
+    // 参数设置
+    const maxIterations = 80; 
+    const tolerance = 0.00001; 
+
+    // z^3 - 1 的三个根
+    const roots = [
+      { r: 1, m: 0 },                 // 根 1
+      { r: -0.5, m: Math.sqrt(3)/2 }, // 根 2
+      { r: -0.5, m: -Math.sqrt(3)/2 } // 根 3
+    ];
+
+    // --- 颜色配置区域 ---
+    
+    // 1. 米白色 (Cream/Beige) - 高雅的主调
+    const colorRoot1 = { r: 235, g: 232, b: 205 }; 
+    
+    // 2. 深邃黑蓝色 (Deep Midnight Blue) - 神秘
+    const colorRoot2 = { r: 8, g: 24, b: 55 }; 
+
+    // 3. 暗黑色 (Dark Obsidian) - 接近 #131313 但稍微有一点点亮度以便区分
+    const colorRoot3 = { r: 25, g: 25, b: 30 }; 
+
+    // 4. 边界/背景基底色 (#131313)
+    const baseDark = { r: 19, g: 19, b: 19 }; 
+
+    function showLoading() {
+        document.getElementById('loading-overlay').classList.add('show');
+    }
+
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('show');
+    }
+
+    // 复数运算工具
+    function cMul(a, b) {
+      return { r: a.r * b.r - a.m * b.m, m: a.r * b.m + a.m * b.r };
+    }
+    function cDiv(a, b) {
+      const denom = b.r * b.r + b.m * b.m;
+      return { r: (a.r * b.r + a.m * b.m) / denom, m: (a.m * b.r - a.r * b.m) / denom };
+    }
+    function cSub(a, b) {
+      return { r: a.r - b.r, m: a.m - b.m };
+    }
+    function distSq(z1, z2) {
+      const dr = z1.r - z2.r;
+      const dm = z1.m - z2.m;
+      return dr * dr + dm * dm;
+    }
+
+    function getNewtonColor(zr, zm) {
+      let z = { r: zr, m: zm };
+      let iter = 0;
+      let rootIndex = -1;
+
+      // 迭代过程
+      for (iter = 0; iter < maxIterations; iter++) {
+        for (let i = 0; i < 3; i++) {
+          if (distSq(z, roots[i]) < tolerance) {
+            rootIndex = i;
+            break;
+          }
+        }
+        if (rootIndex !== -1) break;
+
+        if (Math.abs(z.r) < 1e-6 && Math.abs(z.m) < 1e-6) return baseDark;
+
+        // z_new = (2 * z^3 + 1) / (3 * z^2) 优化算法
+        let z2 = { r: z.r * z.r - z.m * z.m, m: 2 * z.r * z.m };
+        let z3 = cMul(z2, z);
+        
+        let num = { r: 2 * z3.r + 1, m: 2 * z3.m };
+        let den = { r: 3 * z2.r, m: 3 * z2.m };
+        
+        z = cDiv(num, den);
+      }
+
+      // --- 这里的着色逻辑是关键 ---
+      
+      // 如果没收敛（极少见），返回背景色
+      if (rootIndex === -1) return baseDark;
+
+      // 确定基础目标色
+      let targetColor;
+      if (rootIndex === 0) targetColor = colorRoot1; // 米白
+      else if (rootIndex === 1) targetColor = colorRoot2; // 深蓝
+      else targetColor = colorRoot3; // 暗黑
+
+      // 计算光照因子 (Lightness)
+      // 使用指数衰减：迭代次数越少（越靠近中心），越接近原色；迭代次数越多（越靠近边缘），越接近背景色 #131313
+      // 调节 0.15 这个系数：数值越小，亮部区域越大；数值越大，黑色吞噬得越快
+      let light = Math.exp(-iter * 0.15);
+
+      // 线性插值：在 目标色 和 背景色(#131313) 之间混合
+      let r = targetColor.r * light + baseDark.r * (1 - light);
+      let g = targetColor.g * light + baseDark.g * (1 - light);
+      let b = targetColor.b * light + baseDark.b * (1 - light);
+
+      return { r, g, b };
+    }
+
+    function makejimg (ctx, imd, canvasWidth, canvasHeight) {
+      showLoading();
+
+      const xMin = -2.0;
+      const xMax = 2.0;
+      const ratio = canvasHeight / canvasWidth;
+      const yRange = (xMax - xMin) * ratio;
+      const yMin = -yRange / 2;
+      const yMax = yRange / 2;
+
+      const scaleX = (xMax - xMin) / canvasWidth;
+      const scaleY = (yMax - yMin) / canvasHeight;
+
+      let y = 0;
+      function renderNextChunk() {
+        const chunkHeight = 25; 
+        const endY = Math.min(y + chunkHeight, canvasHeight);
+
+        for (let currentY = y; currentY < endY; currentY++) {
+          for (let x = 0; x < canvasWidth; x++) {
+            let z0_r = xMin + x * scaleX;
+            let z0_m = yMax - currentY * scaleY;
+
+            const color = getNewtonColor(z0_r, z0_m);
+            const pixelIndex = (currentY * canvasWidth + x) * 4;
+
+            imd.data[pixelIndex] = color.r;
+            imd.data[pixelIndex + 1] = color.g;
+            imd.data[pixelIndex + 2] = color.b;
+            imd.data[pixelIndex + 3] = 255;
+          }
+        }
+
+        y = endY;
+        if (y < canvasHeight) {
+          requestAnimationFrame(renderNextChunk);
+        } else {
+          ctx.putImageData(imd, 0, 0);
+          hideLoading();
+        }
+      }
+      
+      requestAnimationFrame(renderNextChunk);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        makejimg(ctx, imd, cv.width, cv.height);
+    });
+
+  </script>
+</body>
+</html>

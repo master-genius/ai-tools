@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ethereal Fractal Flame</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #131313; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      /* 保持原有比例或全屏，这里设为自适应 */
+      max-width: 95vw;
+      max-height: 95vh;
+      display: block;
+      box-shadow: 0 0 60px rgba(0,0,0,0.6);
+    }
+    #ui-layer {
+      position: absolute;
+      bottom: 30px;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      color: #666;
+      font-size: 0.9em;
+      letter-spacing: 1px;
+      pointer-events: none;
+    }
+    #loading-text {
+      color: #889;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="fract"></canvas>
+  </div>
+  <div id="ui-layer">
+    <span id="loading-text">ACCUMULATING PHOTONS... <span id="counter">0</span> M Points</span>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('fract');
+    const ctx = canvas.getContext('2d');
+
+    // --- 配置区域 ---
+    const RENDER_WIDTH = 1920 * 1.5; // 提高分辨率以获得细腻质感
+    const RENDER_HEIGHT = 1080 * 1.5;
+    
+    // 伽马校正：值越小，暗部细节越明显（烟雾感越强）
+    const GAMMA = 2.2; 
+    // 亮度增益
+    const BRIGHTNESS = 25.0; 
+    
+    canvas.width = RENDER_WIDTH;
+    canvas.height = RENDER_HEIGHT;
+
+    // 创建一个高精度的累积缓冲区 (Accumulation Buffer)
+    // 用于存储每个像素被击中的次数和颜色总和
+    // 格式: [r, g, b, count] (虽然是一维数组)
+    const bufferSize = RENDER_WIDTH * RENDER_HEIGHT * 4;
+    const histogram = new Float32Array(bufferSize); // Float32 防止溢出
+
+    // --- 颜色定义 (基于您的喜好) ---
+    // 颜色格式：[R, G, B] (0-1范围)
+    
+    // 1. 深邃黑蓝 (Deep Blue) - 对应外围烟雾
+    const color1 = [0.05, 0.1, 0.25]; 
+    // 2. 米白色 (Cream/Beige) - 对应核心亮部
+    const color2 = [0.92, 0.91, 0.8]; 
+    // 3. 灰蓝色 (Muted Blue/Grey) - 对应中间过渡
+    const color3 = [0.1, 0.15, 0.2];
+
+    // --- IFS 函数定义 (构建火焰形态) ---
+    // 我们使用三个变换函数来构建一个类似螺旋火焰的形状
+    const functions = [
+      {
+        // F1: 底部基础，收缩并稍微旋转
+        weight: 0.5,
+        a: 0.85, b: 0.04, c: 0.0,
+        d: -0.04, e: 0.85, f: 1.6,
+        color: color2 // 核心是米白色
+      },
+      {
+        // F2: 左侧螺旋翼
+        weight: 0.25,
+        a: 0.2, b: -0.26, c: 0.0,
+        d: 0.23, e: 0.22, f: 1.6,
+        color: color1 // 边缘是深蓝
+      },
+      {
+        // F3: 右侧螺旋翼
+        weight: 0.25,
+        a: -0.15, b: 0.28, c: 0.0,
+        d: 0.26, e: 0.24, f: 0.44,
+        color: color3 // 过渡色
+      }
+    ];
+
+    // 非线性变化函数 (Variation): Sinusoidal (正弦波)
+    // 这让分形看起来像波浪或烟雾，而不是直线的几何体
+    function applyVariation(x, y) {
+      // 这里混合了 "Linear" (保持结构) 和 "Sinusoidal" (增加波纹)
+      return {
+        x: Math.sin(x),
+        y: Math.sin(y)
+      };
+    }
+
+    // 全局点坐标
+    let px = 0;
+    let py = 0;
+    // 当前携带的颜色
+    let pr = 0, pg = 0, pb = 0;
+
+    // 统计总点数
+    let totalPoints = 0;
+
+    // --- 渲染核心 ---
+    function renderBatch() {
+      // 每帧计算的点数 (越多越快，但太高会卡顿)
+      const pointsPerFrame = 100000; 
+      
+      // 预计算画布缩放参数
+      const scale = RENDER_HEIGHT / 2.5; // 缩放因子
+      const offsetX = RENDER_WIDTH / 2;
+      const offsetY = RENDER_HEIGHT / 1.5; // 向下移一点，因为火焰向上烧
+
+      for (let i = 0; i < pointsPerFrame; i++) {
+        // 1. 随机选择一个变换函数 (根据权重)
+        const r = Math.random();
+        let f;
+        if (r < functions[0].weight) f = functions[0];
+        else if (r < functions[0].weight + functions[1].weight) f = functions[1];
+        else f = functions[2];
+
+        // 2. 应用仿射变换 (Affine Transform)
+        const nx = f.a * px + f.b * py + f.c;
+        const ny = f.d * px + f.e * py + f.f;
+
+        // 3. 应用非线性变化 (Variation)
+        // 为了得到更像"火"的效果，我们混合线性移动和正弦扭曲
+        // 这种混合产生"流体"感
+        const vScale = 1.2;
+        px = nx + Math.sin(nx * vScale) * 0.1;
+        py = ny + Math.sin(ny * vScale) * 0.1;
+
+        // 4. 颜色混合 (Color Blending)
+        // 当前点的颜色 = (旧颜色 + 函数颜色) / 2
+        pr = (pr + f.color[0]) * 0.5;
+        pg = (pg + f.color[1]) * 0.5;
+        pb = (pb + f.color[2]) * 0.5;
+
+        // 5. 映射到屏幕坐标
+        // 稍微放大并居中
+        const screenX = Math.floor(px * scale + offsetX);
+        const screenY = Math.floor(offsetY - py * scale); // Y轴反转
+
+        // 6. 累积到直方图 (Histogram)
+        if (screenX >= 0 && screenX < RENDER_WIDTH && screenY >= 0 && screenY < RENDER_HEIGHT) {
+          // 忽略最初的几次迭代（预热），因为初始点可能在随机位置
+          if (totalPoints > 20) {
+            const idx = (screenY * RENDER_WIDTH + screenX) * 4;
+            histogram[idx] += pr;     // R sum
+            histogram[idx + 1] += pg; // G sum
+            histogram[idx + 2] += pb; // B sum
+            histogram[idx + 3] += 1;  // Hit count (密度)
+          }
+        }
+      }
+      
+      totalPoints += pointsPerFrame;
+      document.getElementById('counter').innerText = (totalPoints / 1000000).toFixed(1);
+
+      // 每渲染 5 批次更新一次画面，节省开销
+      if (totalPoints % (pointsPerFrame * 5) === 0) {
+        drawToCanvas();
+      }
+      
+      requestAnimationFrame(renderBatch);
+    }
+
+    // --- 图像合成 (Tone Mapping) ---
+    // 将高动态范围的 histogram 数据转换成可见的像素
+    function drawToCanvas() {
+      const imageData = ctx.createImageData(RENDER_WIDTH, RENDER_HEIGHT);
+      const data = imageData.data;
+      
+      // 背景基色 #131313 (RGB: 19, 19, 19)
+      const bgR = 19, bgG = 19, bgB = 19;
+      
+      let maxDensity = 0;
+      // 第一次遍历：寻找最大密度 (为了归一化)
+      // 为了性能，这里可以进行估算或跳跃采样，但为了质量我们完全遍历
+      for (let i = 3; i < bufferSize; i += 4) {
+        if (histogram[i] > maxDensity) maxDensity = histogram[i];
+      }
+      
+      // 防止除零
+      if (maxDensity === 0) maxDensity = 1;
+      
+      const logMax = Math.log10(maxDensity + 1);
+
+      for (let i = 0; i < bufferSize; i += 4) {
+        const count = histogram[i + 3];
+        
+        if (count > 0) {
+          // 对数映射算法 (Logarithmic Mapping)
+          // 这是火焰分形看起来发光的关键
+          // alpha = log(密度) / log(最大密度)
+          let alpha = Math.log10(count + 1) / logMax;
+          
+          // 应用伽马校正和亮度增益
+          // 使得低密度区域（烟雾）也能被看见
+          alpha = Math.pow(alpha, 1 / GAMMA) * BRIGHTNESS;
+          // 限制在 0-1 之间 (虽然 BRIGHTNESS 很大，主要靠颜色混合吸收)
+          // 这里我们不用硬截断，而是用作混合因子
+          
+          // 计算该像素的平均颜色
+          // sumRGB / count
+          const r = (histogram[i] / count) * 255;
+          const g = (histogram[i + 1] / count) * 255;
+          const b = (histogram[i + 2] / count) * 255;
+
+          // 最终像素颜色 = 颜色 * 亮度因子 (Alpha)
+          // 并与背景色 #131313 混合
+          // 注意：这里的 alpha 不是透明度，而是"光强"
+          
+          // 简单的 Reinhard Tone Mapping 变体
+          const scaleFactor = alpha / (alpha + 1) * 3.0; // *3.0 增强对比度
+
+          data[i]     = bgR * (1 - scaleFactor) + r * scaleFactor;
+          data[i + 1] = bgG * (1 - scaleFactor) + g * scaleFactor;
+          data[i + 2] = bgB * (1 - scaleFactor) + b * scaleFactor;
+          data[i + 3] = 255; // Alpha always 255
+        } else {
+          // 没有光子击中的地方显示背景色
+          data[i] = bgR;
+          data[i + 1] = bgG;
+          data[i + 2] = bgB;
+          data[i + 3] = 255;
+        }
+      }
+      
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // 启动
+    renderBatch();
+
+  </script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Julia 集分形</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #1a1a1a; color: #eee; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column; /* 垂直排列 */
+      justify-content: center;
+      align-items: center;
+    }
+    select {
+      margin-bottom: 10px;
+      padding: 5px;
+      background-color: #333;
+      color: #eee;
+      border: 1px solid #555;
+      border-radius: 3px;
+    }
+    canvas {
+      /* border: 1px solid #ccc; */
+      max-width: 95vw; /* 确保画布不会溢出视口 */
+      max-height: 90vh; /* 确保画布不会溢出视口，留出空间给select */
+      display: block;
+      image-rendering: pixelated; /* 尝试让低分辨率渲染更清晰 */
+      image-rendering: crisp-edges;
+    }
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-size: 2em;
+      z-index: 100;
+      pointer-events: none; /* 允许点击穿透 */
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+    }
+    #loading-overlay.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <select name="julia-params" id="julia-args" onchange="reMakeImg(this);">
+      <option value="-0.70176|-0.3842" selected>-0.70176 -0.3842 (默认)</option>
+      <option value="-0.786|-0.134">-0.786 -0.134</option>
+      <option value="-0.75|0">-0.75 0</option>
+      <option value="-0.75|0.1">-0.75 0.1</option>
+      <option value="-0.75|0.2">-0.75 0.2</option>
+      <option value="-0.8|0.156">-0.8 0.156</option>
+      <option value="-0.81|0.157">-0.81 0.157</option>
+      <option value="-0.81|0.157">-0.81 0.158</option>
+      <option value="-0.88|-0.22">-0.88 -0.22</option>
+      <option value="-0.835|-0.2321">-0.835 -0.2321</option>
+      <option value="-0.561|-0.49">-0.561 -0.49</option>
+      <option value="0.23|-0.56">0.23 -0.56</option>
+      <option value="0.28|-0.59">0.28 -0.59</option>
+      <option value="0.26|-0.62">0.26 -0.62</option>
+      <option value="0.32|-0.56">0.32 -0.56</option>
+      <option value="0.32|-0.52">0.32 -0.52</option>
+      <option value="0.29|-0.55">0.29 -0.55</option>
+      <option value="0.29|-0.52">0.29 -0.52</option>
+      <option value="-0.521|-0.51">-0.521 -0.51</option>
+      <option value="-0.521|0.512">-0.521 0.512</option>
+      <option value="-0.849|0.221">-0.849 0.221</option>
+      <option value="0.285|0.01">0.285 0.01</option>
+      <option value="0.278|0.02">0.278 0.02</option>
+      <option value="0.42|-0.142">0.42 -0.142</option>
+      <option value="-0.857|0.142">-0.857 0.142</option>
+      <option value="0.285|0">0.285 0</option>
+      <option value="0.45|-0.1428">0.45 -0.1428</option>
+      <option value="-0.678|0.345">-0.678 0.345</option>
+      <option value="-0.95|0.28">-0.95 0.28</option>
+      <option value="-0.142|0.857">-0.142 0.857</option>
+    </select>
+    <canvas id="fract"></canvas>
+  </div>
+  <div id="loading-overlay">正在生成分形...</div>
+  <script>
+    var cv = document.getElementById('fract');
+    var ctx = cv.getContext('2d');
+
+    // 定义画布的显示分辨率
+    // 高计算分辨率可能导致浏览器卡顿甚至崩溃，请谨慎使用
+    const RENDER_WIDTH = 5120; // 默认渲染宽度
+    const RENDER_HEIGHT = 3200; // 默认渲染高度
+
+    // 设置画布的实际像素尺寸
+    cv.width = RENDER_WIDTH;
+    cv.height = RENDER_HEIGHT;
+
+    var imd = ctx.createImageData(RENDER_WIDTH, RENDER_HEIGHT); // 使用createImageData创建正确尺寸的ImageData
+    var _zc = { r: -0.70176, m: -0.3842 }; // 初始 c 值，与默认选择匹配
+    const maxIterations = 200; // 最大迭代次数，增加以获得更多细节
+    const escapeRadiusSquared = 4; // 逃逸半径的平方 (2*2)
+
+    // 显示加载指示器
+    function showLoading() {
+        document.getElementById('loading-overlay').classList.add('show');
+    }
+
+    // 隐藏加载指示器
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('show');
+    }
+
+    /*
+      Julia集迭代函数 Z = Z^2 + C
+      z 是当前点 {r, m}
+      c 是 Julia 集的常数 {r, m}
+    */
+    function juliaZ (z, c) {
+      let rt = {
+        r : z.r * z.r - z.m * z.m,
+        m : 2 * z.r * z.m
+      };
+      rt.r += c.r;
+      rt.m += c.m;
+      return rt;
+    }
+
+    // 自定义颜色映射函数
+    // 这是一个更平滑的渐变，基于 k 的值
+    function getColor(k) {
+      if (k === maxIterations) {
+        return { r: 0, g: 0, b: 0 }; // 未逃逸，内部颜色为黑色
+      }
+
+      // 调整 k 的值以获得更好的颜色分布
+      // 这里的颜色算法可以根据喜好进行修改
+      const factor = k / maxIterations;
+      let r = Math.floor(9 * (1 - factor) * factor * factor * factor * 255);
+      let g = Math.floor(15 * (1 - factor) * (1 - factor) * factor * factor * 255);
+      let b = Math.floor(7 * (1 - factor) * (1 - factor) * (1 - factor) * factor * 255);
+
+      return { r, g, b };
+    }
+
+    function makejimg (ctx, imd, canvasWidth, canvasHeight, c_param) {
+      showLoading(); // 显示加载动画
+
+      // 定义复数平面的可视窗口
+      const xMin = -1.8;
+      const xMax = 1.8;
+      const yMin = -1.2;
+      const yMax = 1.2;
+
+      // 计算将像素坐标映射到复数平面的缩放因子
+      const scaleX = (xMax - xMin) / canvasWidth;
+      const scaleY = (yMax - yMin) / canvasHeight;
+
+      // 使用异步/setTimeout 来避免浏览器长时间阻塞，让加载动画有机会显示
+      // 这对于高分辨率渲染特别有用
+      let y = 0;
+      function renderNextChunk() {
+        const chunkHeight = 20; // 每次处理的行数
+        const endY = Math.min(y + chunkHeight, canvasHeight);
+
+        for (let currentY = y; currentY < endY; currentY++) {
+          for (let x = 0; x < canvasWidth; x++) {
+            // 将像素坐标 (x, currentY) 映射到复数平面坐标 (zx, zy)
+            // 复数平面的原点 (0,0) 将位于画布的中心。
+            let zx = xMin + x * scaleX;
+            let zy = yMax - currentY * scaleY; // 画布的 y 轴是反向的（顶部是 0，底部是最大值）
+
+            let z = { r: zx, m: zy };
+            let k; // 迭代计数
+
+            for (k = 0; k < maxIterations; k++) {
+              // 检查幅值平方是否大于逃逸半径的平方
+              if (z.r * z.r + z.m * z.m > escapeRadiusSquared) {
+                break; // 逃逸
+              }
+              z = juliaZ(z, c_param); // 应用 Julia 集函数，传入当前的 c_param
+            }
+
+            // 计算 ImageData 数组中像素的一维索引
+            const pixelIndex = (currentY * canvasWidth + x) * 4;
+
+            const color = getColor(k); // 获取颜色
+
+            imd.data[pixelIndex] = color.r;     // 红
+            imd.data[pixelIndex + 1] = color.g; // 绿
+            imd.data[pixelIndex + 2] = color.b; // 蓝
+            imd.data[pixelIndex + 3] = 255;      // Alpha (完全不透明)
+          }
+        }
+
+        y = endY;
+        if (y < canvasHeight) {
+          // 在处理完一个块后，立即更新画布以显示进度（可选，可能影响性能）
+          // ctx.putImageData(imd, 0, 0);
+          setTimeout(renderNextChunk, 0); // 继续渲染下一个块
+        } else {
+          // 所有像素已处理完毕
+          ctx.putImageData(imd, 0, 0); // 将最终的图片数据放置在画布的左上角 (0,0)
+          hideLoading(); // 隐藏加载动画
+        }
+      }
+      
+      // 开始渲染
+      renderNextChunk();
+    }
+
+    // 当下拉菜单选择改变时调用
+    function reMakeImg(t) {
+      var opt = t.options[t.selectedIndex];
+      var val = opt.value.split('|');
+      _zc.r = parseFloat(val[0]);
+      _zc.m = parseFloat(val[1]);
+      // 重新绘制，使用当前的画布尺寸
+      makejimg(ctx, imd, cv.width, cv.height, _zc);
+    }
+
+    // 页面加载完成后立即绘制初始分形
+    document.addEventListener('DOMContentLoaded', () => {
+        // 设置 select 元素的初始值以匹配 _zc 的默认值
+        const juliaArgsSelect = document.getElementById('julia-args');
+        const defaultValue = `${_zc.r}|${_zc.m}`;
+        for (let i = 0; i < juliaArgsSelect.options.length; i++) {
+            if (juliaArgsSelect.options[i].value === defaultValue) {
+                juliaArgsSelect.selectedIndex = i;
+                break;
+            }
+        }
+        makejimg(ctx, imd, cv.width, cv.height, _zc);
+    });
+
+  </script>
+</body>
+</html>

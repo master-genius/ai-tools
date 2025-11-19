@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Newton Fractal (z^3 - 1)</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #1a1a1a; color: #eee; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      max-width: 95vw;
+      max-height: 95vh;
+      display: block;
+      /* image-rendering: pixelated; 牛顿分形通常需要平滑过渡，去掉像素化渲染看起来更好 */
+    }
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-size: 2em;
+      z-index: 100;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+    }
+    #loading-overlay.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="fract"></canvas>
+  </div>
+  <div id="loading-overlay">正在生成牛顿分形...</div>
+  <script>
+    var cv = document.getElementById('fract');
+    var ctx = cv.getContext('2d');
+
+    // 分辨率设置
+    const RENDER_WIDTH = 5120; 
+    const RENDER_HEIGHT = 3200; 
+
+    cv.width = RENDER_WIDTH;
+    cv.height = RENDER_HEIGHT;
+
+    var imd = ctx.createImageData(RENDER_WIDTH, RENDER_HEIGHT);
+
+    // 牛顿分形参数
+    const maxIterations = 60; // 牛顿法收敛很快，通常不需要太多迭代
+    const tolerance = 0.0001; // 收敛阈值（距离根多近算收敛）
+
+    // z^3 - 1 的三个根
+    const roots = [
+      { r: 1, m: 0 },                 // 根 1
+      { r: -0.5, m: Math.sqrt(3)/2 }, // 根 2
+      { r: -0.5, m: -Math.sqrt(3)/2 } // 根 3
+    ];
+
+    // 根对应的基础颜色 (RGB)
+    const rootColors = [
+      { r: 255, g: 50, b: 50 },  // 红色系
+      { r: 50, g: 255, b: 50 },  // 绿色系
+      { r: 50, g: 50, b: 255 }   // 蓝色系
+    ];
+
+    function showLoading() {
+        document.getElementById('loading-overlay').classList.add('show');
+    }
+
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('show');
+    }
+
+    // 复数乘法
+    function cMul(a, b) {
+      return {
+        r: a.r * b.r - a.m * b.m,
+        m: a.r * b.m + a.m * b.r
+      };
+    }
+
+    // 复数除法
+    function cDiv(a, b) {
+      const denom = b.r * b.r + b.m * b.m;
+      return {
+        r: (a.r * b.r + a.m * b.m) / denom,
+        m: (a.m * b.r - a.r * b.m) / denom
+      };
+    }
+
+    // 复数减法
+    function cSub(a, b) {
+      return { r: a.r - b.r, m: a.m - b.m };
+    }
+
+    // 计算两点距离平方 (用于判断是否收敛到某个根)
+    function distSq(z1, z2) {
+      const dr = z1.r - z2.r;
+      const dm = z1.m - z2.m;
+      return dr * dr + dm * dm;
+    }
+
+    /*
+      牛顿迭代逻辑
+      对于 f(z) = z^3 - 1
+      迭代公式: z_new = z - (z^3 - 1) / (3z^2)
+      简化后: z_new = (2z^3 + 1) / (3z^2)  或者  2z/3 + 1/(3z^2)
+      这里我们使用 z_new = z - f(z)/f'(z) 的通用形式以便理解
+    */
+    function getNewtonColor(zr, zm) {
+      let z = { r: zr, m: zm };
+      let iter = 0;
+      let rootIndex = -1;
+
+      for (iter = 0; iter < maxIterations; iter++) {
+        // 1. 检查是否已经收敛到某个根
+        for (let i = 0; i < 3; i++) {
+          if (distSq(z, roots[i]) < tolerance) {
+            rootIndex = i;
+            break;
+          }
+        }
+        if (rootIndex !== -1) break;
+
+        // 2. 防止除以零 (原点是奇点)
+        if (Math.abs(z.r) < 0.000001 && Math.abs(z.m) < 0.000001) {
+            return { r: 0, g: 0, b: 0 }; 
+        }
+
+        // 3. 计算 f(z) = z^3 - 1
+        // z^2
+        let z2 = { r: z.r * z.r - z.m * z.m, m: 2 * z.r * z.m };
+        // z^3 = z^2 * z
+        let z3 = cMul(z2, z);
+        // f(z)
+        let fz = { r: z3.r - 1, m: z3.m };
+
+        // 4. 计算 f'(z) = 3z^2
+        let fpz = { r: 3 * z2.r, m: 3 * z2.m };
+
+        // 5. 牛顿步: z = z - f(z)/f'(z)
+        let delta = cDiv(fz, fpz);
+        z = cSub(z, delta);
+      }
+
+      // 着色逻辑
+      if (rootIndex === -1) {
+        return { r: 0, g: 0, b: 0 }; // 未收敛（极为罕见，通常在边界）
+      }
+
+      // 基础颜色取决于收敛到了哪个根
+      const baseColor = rootColors[rootIndex];
+      
+      // 根据迭代次数添加阴影 (迭代次数少 -> 亮，次数多 -> 暗)
+      // 这种平滑处理能让分形看起来更有立体感
+      // 使用对数缩放使梯度更柔和
+      let darkness = 1 - (iter / (maxIterations * 0.6)); 
+      if (darkness < 0) darkness = 0;
+      
+      // 或者只让边缘变暗：
+      // let darkness = 1.0 / (0.1 * iter + 1);
+
+      return {
+        r: Math.floor(baseColor.r * darkness),
+        g: Math.floor(baseColor.g * darkness),
+        b: Math.floor(baseColor.b * darkness)
+      };
+    }
+
+    function makejimg (ctx, imd, canvasWidth, canvasHeight) {
+      showLoading();
+
+      // 牛顿分形的典型可视范围 (居中)
+      const xMin = -2.0;
+      const xMax = 2.0;
+      // 根据宽高比自动调整 Y 范围以防止拉伸
+      const ratio = canvasHeight / canvasWidth;
+      const yRange = (xMax - xMin) * ratio;
+      const yMin = -yRange / 2;
+      const yMax = yRange / 2;
+
+      const scaleX = (xMax - xMin) / canvasWidth;
+      const scaleY = (yMax - yMin) / canvasHeight;
+
+      let y = 0;
+      function renderNextChunk() {
+        const chunkHeight = 20; 
+        const endY = Math.min(y + chunkHeight, canvasHeight);
+
+        for (let currentY = y; currentY < endY; currentY++) {
+          for (let x = 0; x < canvasWidth; x++) {
+            
+            // 映射坐标：像素 -> 复平面 Z
+            // 注意：在牛顿分形中，像素坐标直接映射为初始迭代点 Z0
+            let z0_r = xMin + x * scaleX;
+            let z0_m = yMax - currentY * scaleY;
+
+            const color = getNewtonColor(z0_r, z0_m);
+
+            const pixelIndex = (currentY * canvasWidth + x) * 4;
+
+            imd.data[pixelIndex] = color.r;
+            imd.data[pixelIndex + 1] = color.g;
+            imd.data[pixelIndex + 2] = color.b;
+            imd.data[pixelIndex + 3] = 255;
+          }
+        }
+
+        y = endY;
+        if (y < canvasHeight) {
+          setTimeout(renderNextChunk, 0);
+        } else {
+          ctx.putImageData(imd, 0, 0);
+          hideLoading();
+        }
+      }
+      
+      renderNextChunk();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        makejimg(ctx, imd, cv.width, cv.height);
+    });
+
+  </script>
+</body>
+</html>

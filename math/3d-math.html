@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 函数图像生成器</title>
+    <!-- 引入 Plotly.js (绘图) -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <!-- 引入 Math.js (公式解析) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.0/math.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+            width: 90%;
+            max-width: 1000px;
+            text-align: center;
+        }
+
+        h1 { margin-top: 0; color: #2c3e50; }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        select, input, button {
+            padding: 12px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+
+        input { flex-grow: 1; min-width: 250px; }
+        
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover { background-color: #2980b9; }
+
+        #plot {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #eee;
+            margin-top: 10px;
+        }
+
+        .error-msg {
+            color: #e74c3c;
+            font-weight: bold;
+            height: 24px;
+            margin-top: 5px;
+        }
+        
+        .tips {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>3D 二元函数绘图 (z = f(x, y))</h1>
+    
+    <div class="tips">
+        支持变量 <b>x, y</b>。可以使用 sqrt, sin, cos, exp, log 等数学函数。
+    </div>
+
+    <div class="controls">
+        <select id="preset">
+            <option value="">-- 选择预设 --</option>
+            <option value="x^2 + y^2">抛物面 (碗状)</option>
+            <option value="sin(sqrt(x^2 + y^2))">波浪 (水滴涟漪)</option>
+            <option value="x * y">双曲抛物面 (马鞍面)</option>
+            <option value="cos(x) * sin(y)">蛋托形状</option>
+            <option value="10 * sin(r)/r" data-pre="r=sqrt(x^2+y^2)">墨西哥帽 (复杂计算)</option>
+        </select>
+        
+        <input type="text" id="expression" value="sin(sqrt(x^2 + y^2))" placeholder="输入公式，如 x^2 - y^2">
+        <button onclick="draw()">生成图像</button>
+    </div>
+
+    <div id="error" class="error-msg"></div>
+    
+    <!-- 绘图区域 -->
+    <div id="plot"></div>
+</div>
+
+<script>
+    // 配置项
+    const range = 10;      // 坐标轴范围 -10 到 10
+    const step = 0.5;      // 采样步长 (越小越精细，但越卡)
+    
+    function draw() {
+        const exprStr = document.getElementById('expression').value;
+        const errorDiv = document.getElementById('error');
+        
+        errorDiv.textContent = '';
+
+        if (!exprStr.trim()) return;
+
+        try {
+            // 1. 编译公式
+            const expr = math.compile(exprStr);
+
+            // 2. 生成数据点
+            let xValues = [];
+            let yValues = [];
+            let zValues = [];
+
+            // 这里的逻辑是生成网格数据
+            for (let x = -range; x <= range; x += step) {
+                xValues.push(x);
+            }
+            for (let y = -range; y <= range; y += step) {
+                yValues.push(y);
+            }
+
+            // 计算 Z 轴矩阵 (Plotly 需要 Z 是一个二维数组)
+            for (let i = 0; i < yValues.length; i++) {
+                let zRow = [];
+                for (let j = 0; j < xValues.length; j++) {
+                    const x = xValues[j];
+                    const y = yValues[i];
+                    
+                    // 某些预设可能需要中间变量 (如 r)，这里为了简单只支持直接公式
+                    // 如果公式中包含 r，我们可以在 scope 中计算它，或者用户必须直接写 sqrt(x^2+y^2)
+                    // 为了代码健壮性，我们传入 scope
+                    let scope = { 
+                        x: x, 
+                        y: y,
+                        r: Math.sqrt(x*x + y*y) // 方便用户使用极坐标半径 r
+                    };
+                    
+                    let z = expr.evaluate(scope);
+                    zRow.push(z);
+                }
+                zValues.push(zRow);
+            }
+
+            // 3. 配置 Plotly 数据
+            const data = [{
+                z: zValues,
+                x: xValues,
+                y: yValues,
+                type: 'surface',  // 3D 曲面图
+                colorscale: 'Viridis',
+                contours: {
+                    z: {
+                        show: true,
+                        usecolormap: true,
+                        highlightcolor: "#42f462",
+                        project: { z: true }
+                    }
+                }
+            }];
+
+            const layout = {
+                title: `z = ${exprStr}`,
+                autosize: true,
+                scene: {
+                    xaxis: { title: 'X' },
+                    yaxis: { title: 'Y' },
+                    zaxis: { title: 'Z' },
+                    camera: {
+                        eye: {x: 1.5, y: 1.5, z: 1.5}
+                    }
+                },
+                margin: { l: 0, r: 0, b: 0, t: 50 }
+            };
+
+            const config = { responsive: true };
+
+            // 4. 渲染
+            Plotly.newPlot('plot', data, layout, config);
+
+        } catch (err) {
+            console.error(err);
+            errorDiv.textContent = "公式错误: " + err.message;
+        }
+    }
+
+    // 预设选择逻辑
+    document.getElementById('preset').addEventListener('change', function() {
+        if(this.value) {
+            // 特殊处理：有些预设比较复杂，这里为了演示直接替换 Value
+            // 如果你想做高级预设（比如带 r 定义的），可以在 option 加 data 属性
+            if (this.value.includes('r')) {
+               // 这里我在 MathScope 里默认加了 r，所以用户直接写 r 也可以
+            }
+            document.getElementById('expression').value = this.value;
+            draw();
+        }
+    });
+
+    // 回车绘图
+    document.getElementById('expression').addEventListener('keydown', (e) => {
+        if(e.key === 'Enter') draw();
+    });
+
+    // 页面加载完成后自动画一次
+    window.onload = draw;
+
+</script>
+
+</body>
+</html>

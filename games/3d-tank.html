@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D 坦克大战 - 物理防卡死版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: 'Segoe UI', monospace; user-select: none; }
+        
+        /* UI 层 */
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* 顶部数据 */
+        .bar-container { position: absolute; top: 20px; left: 20px; display: flex; flex-direction: column; gap: 8px; }
+        .text-info { color: #fff; font-size: 22px; font-weight: bold; text-shadow: 2px 2px 0 #000; font-family: sans-serif; letter-spacing: 1px;}
+        .hp-box { width: 250px; height: 18px; background: #222; border: 2px solid #888; border-radius: 4px; overflow: hidden; }
+        .hp-val { width: 100%; height: 100%; background: linear-gradient(90deg, #0055ff, #00ccff); transition: width 0.1s; }
+
+        /* 按键反馈 */
+        #debug-panel { position: absolute; bottom: 30px; right: 30px; text-align: right; }
+        .key-row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+        .key { width: 45px; height: 45px; line-height: 45px; text-align: center; background: rgba(50,50,50,0.8); color: #ccc; border: 2px solid #666; border-radius: 6px; font-weight: bold; font-size: 20px; }
+        .key.active { background: #0055ff; color: #fff; border-color: #fff; transform: scale(0.95); }
+
+        /* 游戏结束 */
+        #game-over { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(20, 20, 20, 0.95); padding: 50px; text-align: center; border: 2px solid #fff; pointer-events: auto; z-index: 10; border-radius: 12px; box-shadow: 0 0 30px rgba(0,0,0,0.8); }
+        h1 { color: #fff; margin: 0 0 30px 0; font-size: 48px; }
+        button { padding: 15px 60px; font-size: 24px; background: #0055ff; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 6px; transition: all 0.2s; }
+        button:hover { background: #fff; color: #0055ff; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<div id="ui">
+    <div class="bar-container">
+        <div class="text-info" id="score-text">SCORE: 0 | ENEMIES: 0</div>
+        <div class="hp-box"><div class="hp-val" id="hp-bar"></div></div>
+        <div style="color:#aaa; font-size:12px; margin-top:4px;">WASD 移动 | SPACE/K 射击</div>
+    </div>
+
+    <div id="debug-panel">
+        <div class="key-row"><div class="key" id="key-w">W</div></div>
+        <div class="key-row">
+            <div class="key" id="key-a">A</div>
+            <div class="key" id="key-s">S</div>
+            <div class="key" id="key-d">D</div>
+        </div>
+        <div class="key-row" style="margin-top:10px;">
+            <div class="key" style="width:145px" id="key-space">FIRE</div>
+        </div>
+    </div>
+
+    <div id="game-over">
+        <h1 id="go-title">MISSION FAILED</h1>
+        <button onclick="resetGame()">RESTART</button>
+    </div>
+</div>
+
+<script>
+    // --- 游戏配置 ---
+    const CONFIG = {
+        mapHalfSize: 350,
+        playerSpeed: 3,
+        enemySlowSpeed: 1,
+        enemyFastSpeed: 2.1,
+        bulletSpeed: 5.9,
+        maxEnemies: 10,
+        enemySpawnRate: 2.5,
+        tankRadius: 10,        
+        collisionRadius: 9,    
+        bulletHitDist: 4,      
+    };
+
+    // --- 全局变量 ---
+    let scene, camera, renderer;
+    let player = null;
+    let enemies = [];
+    let bullets = [];
+    let particles = [];
+    let walls = []; 
+    let input = { up: false, down: false, left: false, right: false, shoot: false };
+    let gameActive = false;
+    let score = 0;
+    let spawnTimer = 0;
+    let clock = new THREE.Clock();
+
+    const matLibrary = {
+        player: new THREE.MeshStandardMaterial({ color: 0x0033aa, roughness: 0.4, metalness: 0.5 }),
+        enemyNormal: new THREE.MeshStandardMaterial({ color: 0xcc0000, roughness: 0.6 }),
+        enemyElite: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.8 }),
+        barrel: new THREE.MeshStandardMaterial({ color: 0x333333 }),
+        tracks: new THREE.MeshStandardMaterial({ color: 0x000000 }),
+        bullet: new THREE.MeshBasicMaterial({ color: 0x00ffff }),
+        enemyBullet: new THREE.MeshBasicMaterial({ color: 0xffaa00 }),
+        wall: new THREE.MeshStandardMaterial({ color: 0x607d8b }),
+        obs: new THREE.MeshStandardMaterial({ color: 0x8d6e63 })
+    };
+
+    // --- 初始化 ---
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x2a2a2a);
+
+        const aspect = window.innerWidth / window.innerHeight;
+        const d = 450;
+        camera = new THREE.OrthographicCamera(-d * aspect / 2, d * aspect / 2, d / 2, -d / 2, 1, 1000);
+        camera.position.set(-200, 300, 200); 
+        camera.lookAt(0, 0, 0);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambient);
+        
+        const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+        sun.position.set(-150, 300, 100);
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(2048, 2048);
+        sun.shadow.camera.left = -500;
+        sun.shadow.camera.right = 500;
+        sun.shadow.camera.top = 500;
+        sun.shadow.camera.bottom = -500;
+        scene.add(sun);
+
+        const grid = new THREE.GridHelper(CONFIG.mapHalfSize*2, 40, 0x555555, 0x333333);
+        scene.add(grid);
+        
+        const plane = new THREE.Mesh(
+            new THREE.PlaneGeometry(CONFIG.mapHalfSize*2, CONFIG.mapHalfSize*2),
+            new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 })
+        );
+        plane.rotation.x = -Math.PI/2;
+        plane.position.y = -0.1;
+        plane.receiveShadow = true;
+        scene.add(plane);
+
+        window.addEventListener('keydown', (e) => handleKey(e.code, true));
+        window.addEventListener('keyup', (e) => handleKey(e.code, false));
+        window.addEventListener('resize', onResize);
+
+        resetGame();
+        animate();
+    }
+
+    function handleKey(code, isDown) {
+        const map = {
+            'KeyW': 'up', 'ArrowUp': 'up',
+            'KeyS': 'down', 'ArrowDown': 'down',
+            'KeyA': 'left', 'ArrowLeft': 'left',
+            'KeyD': 'right', 'ArrowRight': 'right',
+            'Space': 'shoot', 'KeyK': 'shoot'
+        };
+        if (map[code]) {
+            input[map[code]] = isDown;
+            const uiId = map[code] === 'shoot' ? 'key-space' : 'key-' + map[code][0];
+            const el = document.getElementById(uiId);
+            if(el) isDown ? el.classList.add('active') : el.classList.remove('active');
+            if (isDown && map[code] === 'shoot' && gameActive && player) player.shoot();
+        }
+    }
+
+    // --- 循环 ---
+    function animate() {
+        requestAnimationFrame(animate);
+        let dt = Math.min(clock.getDelta(), 0.06);
+
+        if (!gameActive) return;
+
+        if (player) player.update(dt);
+
+        if (player) {
+            const targetPos = player.mesh.position.clone().add(new THREE.Vector3(-200, 300, 200));
+            camera.position.lerp(targetPos, 0.1);
+        }
+
+        spawnTimer += dt;
+        if (spawnTimer > CONFIG.enemySpawnRate && enemies.length < CONFIG.maxEnemies) {
+            spawnEnemy();
+            spawnTimer = 0;
+        }
+        enemies.forEach(e => e.update(dt));
+
+        checkBulletInteractions();
+
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            if (bullets[i].update(dt)) {
+                bullets.splice(i, 1);
+            }
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            if (particles[i].update(dt)) particles.splice(i, 1);
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    function checkBulletInteractions() {
+        for (let i = 0; i < bullets.length; i++) {
+            if (bullets[i].dead) continue;
+            for (let j = i + 1; j < bullets.length; j++) {
+                if (bullets[j].dead) continue;
+                let b1 = bullets[i];
+                let b2 = bullets[j];
+                if (b1.isPlayer !== b2.isPlayer) {
+                    const distSq = b1.mesh.position.distanceToSquared(b2.mesh.position);
+                    if (distSq < CONFIG.bulletHitDist * CONFIG.bulletHitDist) {
+                        const midPos = b1.mesh.position.clone().add(b2.mesh.position).multiplyScalar(0.5);
+                        createSparks(midPos, 5);
+                        b1.dead = true;
+                        b2.dead = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 实体类 ---
+
+    class Tank {
+        constructor(x, z, type) {
+            this.type = type;
+            this.mesh = new THREE.Group();
+            this.mesh.position.set(x, 0, z);
+            
+            let matBody, matTurret, hp, speed;
+            if (type === 'player') {
+                matBody = matLibrary.player;
+                hp = 100;
+                speed = CONFIG.playerSpeed;
+            } else if (type === 'enemy_elite') {
+                matBody = matLibrary.enemyElite;
+                hp = 60;
+                speed = CONFIG.enemyFastSpeed;
+            } else {
+                matBody = matLibrary.enemyNormal;
+                hp = 30;
+                speed = CONFIG.enemySlowSpeed;
+            }
+
+            this.hp = hp;
+            this.maxHp = hp;
+            this.speed = speed;
+            this.dead = false;
+            this.cooldown = 0;
+            this.aiDir = new THREE.Vector3();
+            this.aiTimer = 0;
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(14, 8, 20), matBody);
+            body.position.y = 4;
+            body.castShadow = true;
+            this.mesh.add(body);
+            
+            const trackL = new THREE.Mesh(new THREE.BoxGeometry(3, 6, 22), matLibrary.tracks);
+            trackL.position.set(-7.5, 3, 0);
+            trackL.castShadow = true;
+            this.mesh.add(trackL);
+            const trackR = new THREE.Mesh(new THREE.BoxGeometry(3, 6, 22), matLibrary.tracks);
+            trackR.position.set(7.5, 3, 0);
+            trackR.castShadow = true;
+            this.mesh.add(trackR);
+
+            const turret = new THREE.Mesh(new THREE.BoxGeometry(10, 6, 12), matBody);
+            turret.position.y = 10;
+            turret.castShadow = true;
+            this.mesh.add(turret);
+
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 14), matLibrary.barrel);
+            barrel.rotation.x = Math.PI / 2;
+            barrel.position.set(0, 10, 10);
+            barrel.castShadow = true;
+            this.mesh.add(barrel);
+
+            scene.add(this.mesh);
+        }
+
+        update(dt) {
+            if (this.dead) return;
+            this.cooldown -= dt;
+
+            let dx = 0, dz = 0;
+            if (this.type === 'player') {
+                if (input.up) dz = -1;
+                if (input.down) dz = 1;
+                if (input.left) dx = -1;
+                if (input.right) dx = 1;
+            } else {
+                this.runAI(dt);
+                dx = this.aiDir.x;
+                dz = this.aiDir.z;
+            }
+
+            // 物理移动逻辑 (修复版)
+            if (dx !== 0 || dz !== 0) {
+                const len = Math.sqrt(dx*dx + dz*dz);
+                dx /= len; dz /= len;
+                const moveStep = this.speed * dt * 60;
+                
+                // 1. X轴移动尝试
+                const oldX = this.mesh.position.x;
+                this.mesh.position.x += dx * moveStep;
+                
+                // 检测 X 轴方向的新碰撞
+                const wallX = getIntersectingWall(this.mesh.position);
+                if (wallX) {
+                    // 检测：如果在移动之前就已经在墙里了？
+                    const prevPos = new THREE.Vector3(oldX, 0, this.mesh.position.z);
+                    const prevWall = getIntersectingWall(prevPos);
+
+                    if (!prevWall) {
+                        // 之前没撞，现在撞了 -> 坚决不允许 (回退)
+                        this.mesh.position.x = oldX;
+                    } else {
+                        // 之前就已经陷进去了 (卡墙状态)
+                        // 核心修复：比较距离，允许“往外走”，禁止“往里钻”
+                        const wallCenterX = (wallX.min.x + wallX.max.x) / 2;
+                        const distOld = Math.abs(oldX - wallCenterX);
+                        const distNew = Math.abs(this.mesh.position.x - wallCenterX);
+                        
+                        if (distNew < distOld) {
+                            // 离中心更近了 -> 往里钻 -> 回退
+                            this.mesh.position.x = oldX;
+                        }
+                        // 否则(distNew > distOld)：正在远离中心 -> 允许移动（脱困）
+                    }
+                }
+                
+                // 2. Z轴移动尝试 (逻辑同上)
+                const oldZ = this.mesh.position.z;
+                this.mesh.position.z += dz * moveStep;
+                
+                const wallZ = getIntersectingWall(this.mesh.position);
+                if (wallZ) {
+                    const prevPos = new THREE.Vector3(this.mesh.position.x, 0, oldZ);
+                    const prevWall = getIntersectingWall(prevPos);
+
+                    if (!prevWall) {
+                        this.mesh.position.z = oldZ;
+                    } else {
+                        const wallCenterZ = (wallZ.min.z + wallZ.max.z) / 2;
+                        const distOld = Math.abs(oldZ - wallCenterZ);
+                        const distNew = Math.abs(this.mesh.position.z - wallCenterZ);
+                        
+                        if (distNew < distOld) {
+                            this.mesh.position.z = oldZ;
+                        }
+                    }
+                }
+
+                // 3. 坦克推挤 (也应用防卡死逻辑)
+                this.handleCollisions();
+
+                // 4. 边界限制
+                const limit = CONFIG.mapHalfSize - 12;
+                this.mesh.position.x = Math.max(-limit, Math.min(limit, this.mesh.position.x));
+                this.mesh.position.z = Math.max(-limit, Math.min(limit, this.mesh.position.z));
+
+                // 5. 转向
+                const targetRot = Math.atan2(dx, dz);
+                let diff = targetRot - this.mesh.rotation.y;
+                while(diff > Math.PI) diff -= Math.PI*2;
+                while(diff < -Math.PI) diff += Math.PI*2;
+                this.mesh.rotation.y += diff * 0.2;
+            }
+        }
+
+        handleCollisions() {
+            const tanks = [player, ...enemies];
+            const r = CONFIG.tankRadius * 2; 
+            const rSq = r * r;
+            
+            for (let t of tanks) {
+                if (t && t !== this && !t.dead) {
+                    const distSq = this.mesh.position.distanceToSquared(t.mesh.position);
+                    if (distSq < rSq) {
+                        const dist = Math.sqrt(distSq);
+                        const push = (r - dist) * 0.5;
+                        if (push <= 0.01) continue;
+
+                        const dir = this.mesh.position.clone().sub(t.mesh.position).normalize();
+                        
+                        // 原始位置
+                        const oldPos = this.mesh.position.clone();
+                        // 推开后的位置
+                        const newPos = this.mesh.position.clone().add(dir.clone().multiplyScalar(push));
+                        
+                        // 检查推开后的位置是否在墙内
+                        const wall = getIntersectingWall(newPos);
+
+                        if (!wall) {
+                            // 没墙，放心推
+                            this.mesh.position.copy(newPos);
+                        } else {
+                            // 推到墙里了。
+                            // 这里也要应用“脱困逻辑”：
+                            // 如果当前就已经在墙里了，而这个推力能把我们推得离墙中心远一点，那就接受！
+                            // 如果当前不在墙里，那绝对不能被推进去。
+
+                            const currentWall = getIntersectingWall(oldPos);
+                            if (currentWall) {
+                                // 我们已经在墙里了
+                                const wallCenter = new THREE.Vector3(
+                                    (wall.min.x + wall.max.x)/2,
+                                    0,
+                                    (wall.min.z + wall.max.z)/2
+                                );
+                                
+                                const distOld = oldPos.distanceToSquared(wallCenter);
+                                const distNew = newPos.distanceToSquared(wallCenter);
+                                
+                                // 如果新位置离墙中心更远，说明这个推力在帮我们脱困，允许执行！
+                                if (distNew > distOld) {
+                                    this.mesh.position.copy(newPos);
+                                }
+                            }
+                            // 如果 currentWall 为空（当前自由），但 wall 不为空（推入墙内），则忽略推力，保护玩家不进墙。
+                        }
+                    }
+                }
+            }
+        }
+
+        shoot() {
+            if (this.dead || this.cooldown > 0) return;
+            this.cooldown = this.type === 'player' ? 0.2 : 1.6;
+            const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0,1,0), this.mesh.rotation.y);
+            const pos = this.mesh.position.clone().add(new THREE.Vector3(0, 10, 0)).add(forward.clone().multiplyScalar(14));
+            bullets.push(new Bullet(pos, forward, this.type === 'player'));
+        }
+
+        runAI(dt) {
+            if (!player || player.dead) return;
+            this.aiTimer -= dt;
+            const dist = this.mesh.position.distanceTo(player.mesh.position);
+            const range = this.type === 'enemy_elite' ? 500 : 300;
+            if (dist < range) {
+                const dx = player.mesh.position.x - this.mesh.position.x;
+                const dz = player.mesh.position.z - this.mesh.position.z;
+                this.aiDir.set(dx, 0, dz);
+                const angle = Math.atan2(dx, dz);
+                if (Math.abs(angle - this.mesh.rotation.y) < 0.3) this.shoot();
+            } else {
+                if (this.aiTimer <= 0) {
+                    this.aiTimer = 1 + Math.random()*2;
+                    const a = Math.random()*Math.PI*2;
+                    this.aiDir.set(Math.sin(a), 0, Math.cos(a));
+                }
+            }
+        }
+
+        damage(amt) {
+            this.hp -= amt;
+            this.mesh.children.forEach(c => {
+                if(c.material.emissive) {
+                    c.material.emissive.setHex(0xffffff);
+                    setTimeout(()=> c && c.material && c.material.emissive.setHex(0x000000), 60);
+                } else {
+                    const old = c.material.color.getHex();
+                    c.material.color.setHex(0xffffff);
+                    setTimeout(()=> c && c.material && c.material.color.setHex(old), 60);
+                }
+            });
+
+            if (this.type === 'player') {
+                if (score > 300 && this.hp < 10) {
+                    let life_val = parseInt(score / 50) % 100;
+                    this.hp += life_val;
+                    score = parseInt(score - life_val * 50);
+                }
+                updateUI();
+            }
+
+            if (this.hp <= 0 && !this.dead) {
+                this.dead = true;
+                createExplosion(this.mesh.position, 2);
+                scene.remove(this.mesh);
+                if (this.type !== 'player') {
+                    score += (this.type==='enemy_elite' ? 300 : 100);
+                    const i = enemies.indexOf(this);
+                    if (i>-1) enemies.splice(i, 1);
+                    updateUI();
+                } else {
+                    endGame(false);
+                }
+            }
+        }
+    }
+
+    class Bullet {
+        constructor(pos, dir, isPlayer) {
+            this.isPlayer = isPlayer;
+            this.dir = dir;
+            this.life = 2.0;
+            this.dead = false;
+            this.mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(2),
+                isPlayer ? matLibrary.bullet : matLibrary.enemyBullet
+            );
+            this.mesh.position.copy(pos);
+            scene.add(this.mesh);
+        }
+
+        update(dt) {
+            if (this.dead) { this.dispose(); return true; }
+            this.life -= dt;
+            const speed = CONFIG.bulletSpeed * dt * 60;
+            const nextPos = this.mesh.position.clone().add(this.dir.clone().multiplyScalar(speed));
+            
+            let hit = false;
+            // 子弹不需要脱困逻辑，只要碰到墙就算炸
+            if (getIntersectingWall(nextPos) !== null) hit = true;
+
+            if (!hit) {
+                const targets = this.isPlayer ? enemies : [player];
+                for (let t of targets) {
+                    if (t && !t.dead && t.mesh.position.distanceTo(nextPos) < 15) {
+                        t.damage(this.isPlayer ? 35 : 5);
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+
+            if (hit || this.life <= 0) {
+                this.explode();
+                this.dispose();
+                return true;
+            }
+            this.mesh.position.copy(nextPos);
+            return false;
+        }
+
+        explode() { createExplosion(this.mesh.position, 0.8); }
+        dispose() { if (this.mesh && this.mesh.parent) scene.remove(this.mesh); this.dead = true; }
+    }
+
+    class Particle {
+        constructor(pos, color = 0xffaa00) {
+            this.life = 1.0;
+            this.mesh = new THREE.Mesh(
+                new THREE.BoxGeometry(2,2,2), 
+                new THREE.MeshBasicMaterial({ color: color, transparent: true })
+            );
+            this.mesh.position.copy(pos);
+            this.vel = new THREE.Vector3((Math.random()-0.5)*20, Math.random()*25, (Math.random()-0.5)*20);
+            scene.add(this.mesh);
+        }
+        update(dt) {
+            this.life -= dt * 1.5;
+            this.vel.y -= dt * 50;
+            this.mesh.position.add(this.vel.clone().multiplyScalar(dt));
+            this.mesh.scale.setScalar(this.life);
+            if (this.life <= 0) { scene.remove(this.mesh); return true; }
+            return false;
+        }
+    }
+
+    function createExplosion(pos, scale) {
+        const c = 8 * scale;
+        for(let i=0; i<c; i++) particles.push(new Particle(pos));
+        const ring = new THREE.Mesh(
+            new THREE.RingGeometry(1, 20*scale, 32),
+            new THREE.MeshBasicMaterial({ color: 0xff5500, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+        );
+        ring.rotation.x = -Math.PI/2;
+        ring.position.copy(pos);
+        ring.position.y = 1;
+        scene.add(ring);
+        particles.push({
+            mesh: ring, life: 0.3, maxLife: 0.3,
+            update: function(dt) {
+                this.life -= dt;
+                const s = 1 + (this.maxLife-this.life)*3;
+                this.mesh.scale.set(s,s,s);
+                this.mesh.material.opacity = this.life/this.maxLife;
+                if(this.life<=0) { scene.remove(this.mesh); return true; }
+                return false;
+            }
+        });
+    }
+    
+    function createSparks(pos, count) {
+        for(let i=0; i<count; i++) particles.push(new Particle(pos, 0xffee00));
+    }
+
+    // --- 核心修复：碰撞检测返回具体的墙体对象，而不仅仅是 boolean ---
+    function getIntersectingWall(pos) {
+        const r = CONFIG.collisionRadius; 
+        for (let w of walls) {
+            if (pos.x > w.min.x - r && pos.x < w.max.x + r &&
+                pos.z > w.min.z - r && pos.z < w.max.z + r) {
+                // 返回碰到的墙体对象，方便计算中心点
+                return w;
+            }
+        }
+        return null;
+    }
+
+    function createMap() {
+        walls = [];
+        for(let i=scene.children.length-1; i>=0; i--) {
+            const obj = scene.children[i];
+            if(obj.type === 'Mesh' && (obj.geometry.type === 'BoxGeometry' && obj.position.y > 0 && obj.geometry.parameters.height >= 30)) {
+                scene.remove(obj);
+            }
+        }
+
+        const s = CONFIG.mapHalfSize;
+        addWall(0, s, s*2, 30, matLibrary.wall);
+        addWall(0, -s, s*2, 30, matLibrary.wall);
+        addWall(s, 0, 30, s*2, matLibrary.wall);
+        addWall(-s, 0, 30, s*2, matLibrary.wall);
+
+        for(let i=0; i<30; i++) {
+            let x, z;
+            do {
+                x = (Math.random()-0.5)*(s*2-120);
+                z = (Math.random()-0.5)*(s*2-120);
+            } while(Math.abs(x)<80 && Math.abs(z)<80); 
+            addWall(x, z, 30+Math.random()*40, 30+Math.random()*40, matLibrary.obs);
+        }
+    }
+
+    function addWall(x, z, w, d, mat) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 30, d), mat);
+        mesh.position.set(x, 15, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        walls.push({ min: {x:x-w/2, z:z-d/2}, max: {x:x+w/2, z:z+d/2} });
+    }
+
+    function spawnEnemy() {
+        let x, z, safe=false, t=0;
+        while(!safe && t++<20) {
+            x = (Math.random()-0.5)*(CONFIG.mapHalfSize*2-100);
+            z = (Math.random()-0.5)*(CONFIG.mapHalfSize*2-100);
+            const pPos = player ? player.mesh.position : new THREE.Vector3(0,0,0);
+            // 生成时如果碰墙，视为不安全位置
+            if (new THREE.Vector3(x,0,z).distanceTo(pPos)>200 && getIntersectingWall({x,z}) === null) safe=true;
+        }
+        if(safe) {
+            const type = Math.random() < 0.3 ? 'enemy_elite' : 'enemy_normal';
+            enemies.push(new Tank(x, z, type));
+            updateUI();
+        }
+    }
+
+    function updateUI() {
+        if(!player) return;
+        document.getElementById('score-text').innerText = `SCORE: ${score} | ENEMIES: ${enemies.length}`;
+        const pct = (player.hp / player.maxHp) * 100;
+        document.getElementById('hp-bar').style.width = Math.max(0, pct) + '%';
+    }
+
+    function resetGame() {
+        if(player) scene.remove(player.mesh);
+        enemies.forEach(e=>scene.remove(e.mesh));
+        bullets.forEach(b=>scene.remove(b.mesh));
+        particles.forEach(p=>scene.remove(p.mesh));
+        
+        createMap();
+        
+        player = new Tank(0, 0, 'player');
+        enemies = [];
+        bullets = [];
+        particles = [];
+        score = 0;
+        gameActive = true;
+        document.getElementById('game-over').style.display = 'none';
+        updateUI();
+        
+        enemies.push(new Tank(200, 200, 'enemy_normal'));
+    }
+
+    function endGame(win) {
+        gameActive = false;
+        document.getElementById('game-over').style.display = 'block';
+        document.getElementById('go-title').innerText = win ? "VICTORY" : "DEFEATED";
+        document.getElementById('go-title').style.color = win ? "#0f0" : "#f00";
+    }
+
+    function onResize() {
+        const aspect = window.innerWidth / window.innerHeight;
+        const d = 450;
+        camera.left = -d * aspect / 2;
+        camera.right = d * aspect / 2;
+        camera.top = d / 2;
+        camera.bottom = -d / 2;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    init();
+</script>
+</body>
+</html>

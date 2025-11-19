@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mandelbrot Set</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #1a1a1a; color: #eee; }
+    .container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      /* border: 1px solid #ccc; */
+      max-width: 95vw;
+      max-height: 95vh;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-size: 2em;
+      z-index: 100;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+    }
+    #loading-overlay.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="fract"></canvas>
+  </div>
+  <div id="loading-overlay">正在生成 Mandelbrot 分形...</div>
+  <script>
+    var cv = document.getElementById('fract');
+    var ctx = cv.getContext('2d');
+
+    // 定义画布的显示分辨率
+    // 高计算分辨率可能导致浏览器卡顿甚至崩溃，请谨慎使用
+    const RENDER_WIDTH = 5120; // 默认渲染宽度
+    const RENDER_HEIGHT = 3200; // 默认渲染高度
+
+    // 设置画布的实际像素尺寸
+    cv.width = RENDER_WIDTH;
+    cv.height = RENDER_HEIGHT;
+
+    var imd = ctx.createImageData(RENDER_WIDTH, RENDER_HEIGHT);
+    const maxIterations = 220; // 最大迭代次数，你的原代码是 220
+    const escapeRadiusSquared = 4; // 逃逸半径的平方 (2*2)
+
+    // 显示加载指示器
+    function showLoading() {
+        document.getElementById('loading-overlay').classList.add('show');
+    }
+
+    // 隐藏加载指示器
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('show');
+    }
+
+    /*
+      Mandelbrot集迭代函数 Z_next = Z^2 + C
+      z 是当前迭代变量 {r, m}
+      c 是对应于画布像素的常数 {r, m}
+    */
+    function mandelbrotZ (z, c) {
+      let rt = {
+        r : z.r * z.r - z.m * z.m,
+        m : 2 * z.r * z.m
+      };
+      rt.r += c.r;
+      rt.m += c.m;
+      return rt;
+    }
+
+    // 自定义颜色映射函数 (与 Julia 集使用相似的，但你可以调整)
+    function getColor(k) {
+      if (k === maxIterations) {
+        return { r: 0, g: 0, b: 0 }; // 未逃逸，内部颜色为黑色
+      }
+
+      // 基于迭代次数 k 的颜色渐变
+      const factor = k / maxIterations;
+
+      let r = Math.floor(11 * (1 - factor) * factor * factor * factor * 255);
+      let g = Math.floor(9 * (1 - factor) * (1 - factor) * factor * factor * 255);
+      let b = Math.floor(8 * (1 - factor) * (1 - factor) * (1 - factor) * factor * 255);
+
+      /* let r = Math.floor(7 * (1 - factor) * factor * factor * 255);
+      let g = Math.floor(5 * (1 - factor) * (1 - factor) * factor * 255);
+      let b = Math.floor(5 * (1 - factor) * (1 - factor) * factor * 255); */
+
+      /* let r = 520 * (1 - factor) * factor - parseInt(Math.random() * factor * 25);
+      let g = 500 * (1 - factor) * factor - parseInt(Math.random() * factor * 25);
+      let b = 550 * (1 - factor) * factor - parseInt(Math.random() * factor * 20); */
+
+      return { r, g, b };
+    }
+
+    function makejimg (ctx, imd, canvasWidth, canvasHeight) {
+      showLoading();
+
+      // 定义复数平面的可视窗口 (Mandelbrot 集的典型范围)
+      const xMin = -2.5; // 更宽广的 x 范围来包含整个Mandelbrot集
+      const xMax = 1.0;
+      const yMin = -1.2;
+      const yMax = 1.2;
+
+      // 计算将像素坐标映射到复数平面的缩放因子
+      const scaleX = (xMax - xMin) / canvasWidth;
+      const scaleY = (yMax - yMin) / canvasHeight;
+
+      let y = 0;
+      function renderNextChunk() {
+        const chunkHeight = 20; // 每次处理的行数
+        const endY = Math.min(y + chunkHeight, canvasHeight);
+
+        for (let currentY = y; currentY < endY; currentY++) {
+          for (let x = 0; x < canvasWidth; x++) {
+            // 将像素坐标 (x, currentY) 映射到复数平面坐标，
+            // 此时它们代表了常数 C 的值
+            let c_r = xMin + x * scaleX;
+            let c_m = yMax - currentY * scaleY; // y-axis is inverted for canvas
+
+            let c = {r: c_r, m: c_m};
+            let z = {r: 0, m: 0}; // Mandelbrot 集的 Z_0 总是 (0,0)
+            let k; // 迭代计数
+
+            for (k = 0; k < maxIterations; k++) {
+              if (z.r * z.r + z.m * z.m > escapeRadiusSquared) {
+                break; // 逃逸
+              }
+              z = mandelbrotZ(z, c); // 应用 Mandelbrot 集函数
+            }
+
+            // 计算 ImageData 数组中像素的一维索引
+            const pixelIndex = (currentY * canvasWidth + x) * 4;
+
+            const color = getColor(k);
+
+            imd.data[pixelIndex] = color.r;
+            imd.data[pixelIndex + 1] = color.g;
+            imd.data[pixelIndex + 2] = color.b;
+            imd.data[pixelIndex + 3] = 255; // 完全不透明
+          }
+        }
+
+        y = endY;
+        if (y < canvasHeight) {
+          setTimeout(renderNextChunk, 0);
+        } else {
+          ctx.putImageData(imd, 0, 0); // 将最终的图片数据放置在画布的左上角 (0,0)
+          hideLoading();
+        }
+      }
+      
+      renderNextChunk();
+    }
+
+    // 页面加载完成后立即绘制初始分形
+    document.addEventListener('DOMContentLoaded', () => {
+        makejimg(ctx, imd, cv.width, cv.height);
+    });
+
+  </script>
+</body>
+</html>
